@@ -20,7 +20,7 @@ add_executable(welcome_demo src/welcome_demo.cpp)
 target_link_libraries(welcome_demo dwmapi user32 gdi32)
 set_target_properties(welcome_demo PROPERTIES WIN32_EXECUTABLE TRUE)
 # Tray App: native C++ rewrite of tray_app.py (zero Python dependency)
-add_executable(win2blur src/tray_app.cpp src/resource.rc)
+add_executable(win2blur src/tray_app.cpp src/profile.cpp src/resource.rc)
 target_link_libraries(win2blur dwmapi user32 shell32 comctl32)
 set_target_properties(win2blur PROPERTIES WIN32_EXECUTABLE TRUE)
 # Copy built child executables to source dir so resource.rc embeds fresh binaries
@@ -37,8 +37,15 @@ add_custom_target(copy_resources ALL
     DEPENDS acrylic_overlay welcome_demo crisp_overlay
     COMMENT "Copying child exes for resource embedding...")
 add_dependencies(win2blur copy_resources)
-# OBJECT_DEPENDS: force resource.rc recompile when staged child exes change
-# (backport from v3.0 line — without this, win2blur.exe silently embeds a
-# stale overlay binary after overlay-only edits)
+# 内嵌依赖修复 (2026-08-12): resource.rc 以相对路径内嵌子 exe, 但 CMake 默认
+# 不知道 RC 依赖这些文件 — 叠加层重链接后 RC 不重编译, win2blur 永远内嵌旧二进制
+# (叠加层尺寸不符/看护代码不生效的根因)。OBJECT_DEPENDS 强制 RC 在 staging
+# 文件变化时重新编译 → win2blur 重链接。
 set_source_files_properties(${CMAKE_SOURCE_DIR}/src/resource.rc PROPERTIES
     OBJECT_DEPENDS "${CMAKE_SOURCE_DIR}/src/acrylic_overlay.exe;${CMAKE_SOURCE_DIR}/src/welcome_demo.exe;${CMAKE_SOURCE_DIR}/src/crisp_overlay.exe")
+# Pure-logic unit target (no framework; nonzero exit = failure)
+add_executable(profile_test tests/profile_test.cpp src/profile.cpp)
+target_link_libraries(profile_test user32)
+if(MINGW)
+    target_link_options(profile_test PRIVATE -municode)  # wmain entry needs wide CRT
+endif()

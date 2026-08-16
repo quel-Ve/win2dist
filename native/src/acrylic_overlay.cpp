@@ -18,7 +18,6 @@
 #endif
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-#include <tlhelp32.h>   // watch_parent_exit: 父进程看护
 #include <dwmapi.h>
 #include <cstdio>
 #include <cstdlib>
@@ -100,6 +99,11 @@ bool detect_win11() {
 }
 
 void do_set_window_pos() {
+    // Idempotence guard: if the overlay is already directly below the target,
+    // skip entirely — every SetWindowPos forces DWM to re-composite the
+    // accent surface, whose first frame renders the tint at full strength
+    // (visible "dark pulse"). Zero churn in the common no-drift case.
+    if (GetWindow(g_overlay, GW_HWNDPREV) == g_target) return;
     SetWindowPos(g_overlay, g_target, 0, 0, 0, 0,
         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);  // synchronous
 }
@@ -132,8 +136,16 @@ void CALLBACK WinEventProc(HWINEVENTHOOK, DWORD event, HWND hwnd,
     } else if (hwnd == g_target) {
         switch (event) {
         case EVENT_OBJECT_DESTROY: g_running = false; break;
-        case EVENT_OBJECT_HIDE:
-        case EVENT_OBJECT_CLOAKED: hide_overlay(); break;
+        case EVENT_OBJECT_HIDE: hide_overlay(); break;
+        case EVENT_OBJECT_CLOAKED:
+            // DWM cloaks BOTH minimized windows and fully-occluded ones.
+            // Only minimize needs the overlay hidden. Hiding on occlusion
+            // cloak is unnecessary (the overlay sits behind the target and
+            // is occluded too) and buys a 1-2 frame accent-surface rebuild
+            // gap on uncloak — the "mask disappears, background shows
+            // through" artifact on cover/uncover.
+            if (IsIconic(g_target)) hide_overlay();
+            break;
         case EVENT_OBJECT_SHOW:
         case EVENT_OBJECT_UNCLOAKED:
             if (IsWindow(g_target)) show_overlay();
@@ -149,6 +161,11 @@ void apply_accent(HWND hwnd, int state, unsigned int tint = 0x00000000) {
             GetProcAddress(u32, "SetWindowCompositionAttribute");
         if (!g_setAccent) return;
     }
+    // Acrylic renders NOTHING at gradient alpha 0 (alpha = effect opacity).
+    // Floor at v2.7's 0x1A (10% black) so blur is always visible, no matter
+    // who launches us (tray slider, session restore, manual test).
+    if (state == ACCENT_ENABLE_ACRYLICBLURBEHIND && ((tint >> 24) & 0xFF) == 0)
+        tint = 0x1A000000;
     AccentPolicy policy = {};
     policy.AccentState = state;
     policy.GradientColor = tint;
@@ -211,32 +228,6 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 }
 
 // ---- Main ----
-
-// 父进程看护 (2026-08-12): 托盘被强杀 (taskkill /f) 时无法执行 WM_DESTROY 的
-// 子进程清理 → 叠加层变孤儿永久残留 (16 个堆积事故的根因)。独立线程等父进程
-// 句柄, 父死即 g_running=false, 叠加层自行退出销毁。
-static void watch_parent_exit() {
-    DWORD parent = 0;
-    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (snap != INVALID_HANDLE_VALUE) {
-        PROCESSENTRY32W pe = {sizeof(pe)};
-        if (Process32FirstW(snap, &pe)) {
-            do {
-                if (pe.th32ProcessID == GetCurrentProcessId()) {
-                    parent = pe.th32ParentProcessID;
-                    break;
-                }
-            } while (Process32NextW(snap, &pe));
-        }
-        CloseHandle(snap);
-    }
-    if (!parent) return;
-    HANDLE hp = OpenProcess(SYNCHRONIZE, FALSE, parent);
-    if (!hp) return;
-    WaitForSingleObject(hp, INFINITE);   // 父进程死亡 (含强杀) → 信号
-    CloseHandle(hp);
-    g_running = false;
-}
 
 int main(int argc, char* argv[]) {
     if (argc < 2) {
@@ -339,10 +330,6 @@ int main(int argc, char* argv[]) {
         EVENT_OBJECT_HIDE, EVENT_OBJECT_UNCLOAKED,
         nullptr, WinEventProc, 0, 0,
         WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
-
-    CreateThread(nullptr, 0, [](LPVOID) -> DWORD {
-        watch_parent_exit(); return 0;
-    }, nullptr, 0, nullptr);
 
     // ---- Main loop ----
     MSG msg;

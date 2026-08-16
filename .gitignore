@@ -11,11 +11,7 @@ __pycache__/
 .venv/
 
 # Deploy directory — released via GitHub Releases
-win2blur/dist/
-
-# Dangling worktree pointers (main repo lost in 2026-08-12 migration)
-v2.7-src/.git
-v2.8-src/.git
+dist/
 
 # Local experiments / build products
 local/build/
