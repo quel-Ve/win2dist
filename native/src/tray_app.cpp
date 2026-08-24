@@ -46,6 +46,7 @@ static const int g_blurPresetCount = sizeof(g_blurPresets) / sizeof(g_blurPreset
 
 // ==================== Globals ====================
 static HWND g_hwnd = nullptr;
+static UINT g_wmTaskbarCreated = 0;   // RegisterWindowMessageW(L"TaskbarCreated") — Explorer 托盘重建时重挂图标
 static NOTIFYICONDATAW g_nid = {};
 static int g_step = DEFAULT_STEP;
 static int g_blurRadius = DEFAULT_BLUR_RADIUS;
@@ -176,6 +177,8 @@ static const AutoApp g_autoPresets[] = {
     {L"WeChat.exe", L""},
     {L"Cherry Studio.exe", L""},
     {L"Code.exe", L""},
+    {L"VCVRack.exe", L""},
+    {L"chrome.exe", L""},
 };
 
 void load_autofrost() {
@@ -991,14 +994,18 @@ void shutdown(bool restore) {
 }
 
 // ==================== WinMain ====================
+void add_tray_icon(HWND hwnd) {
+    g_nid.cbSize = sizeof(NOTIFYICONDATAW); g_nid.hWnd = hwnd; g_nid.uID = 1;
+    g_nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP; g_nid.uCallbackMessage = WM_TRAYICON;
+    g_nid.hIcon = g_hIcon ? g_hIcon : LoadIcon(nullptr, IDI_APPLICATION);
+    wcscpy(g_nid.szTip, L"win2blur");
+    Shell_NotifyIconW(NIM_ADD, &g_nid);
+}
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    if (msg == g_wmTaskbarCreated) { add_tray_icon(hwnd); return 0; }   // 托盘重建 (登录早期/Explorer 重启) 后重挂图标
     switch (msg) {
     case WM_CREATE: {
-        g_nid.cbSize = sizeof(NOTIFYICONDATAW); g_nid.hWnd = hwnd; g_nid.uID = 1;
-        g_nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP; g_nid.uCallbackMessage = WM_TRAYICON;
-        g_nid.hIcon = g_hIcon ? g_hIcon : LoadIcon(nullptr, IDI_APPLICATION);
-        wcscpy(g_nid.szTip, L"win2blur");
-        Shell_NotifyIconW(NIM_ADD, &g_nid);
+        add_tray_icon(hwnd);
         install_hotkeys();   // LL 钩子 — 左右 Alt 区分，取代 RegisterHotKey
         g_overlayPath = extract_resource(101, L"acrylic_overlay.exe");
         g_welcomePath = extract_resource(102, L"welcome_demo.exe");
@@ -1036,6 +1043,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
     HANDLE hSingle = CreateMutexW(nullptr, TRUE, L"win2blur_single");
     if (hSingle && GetLastError() == ERROR_ALREADY_EXISTS) return 0;
     InitializeCriticalSection(&g_fxLock);
+    g_wmTaskbarCreated = RegisterWindowMessageW(L"TaskbarCreated");
     InitCommonControls();
     g_hIcon = LoadIconW(hInst, L"APP_ICON");
     load_config();
